@@ -32,6 +32,48 @@
 #include <iostream>
 #include <vector>
 
+template <typename T, typename To>
+class SMART_DESTROYER
+{
+    typedef To (*destroy_func)(T*);
+public:
+    SMART_DESTROYER(T* ptr, destroy_func func)
+    {
+        _ptr  = ptr;
+        _func = func;
+    }
+    ~SMART_DESTROYER()
+    {
+        if(_ptr != nullptr)
+            _func(_ptr);
+    }
+    T*           _ptr = nullptr;
+    destroy_func _func;
+};
+template <typename T, typename To>
+class SMART_DESTROYER_NON_PTR
+{
+    typedef To (*destroy_func)(T);
+public:
+    SMART_DESTROYER_NON_PTR(T* ptr, destroy_func func)
+    {
+        _ptr  = ptr;
+        _func = func;
+    }
+    ~SMART_DESTROYER_NON_PTR()
+    {
+        if(_ptr != nullptr)
+            _func(*_ptr);
+    }
+    T*           _ptr = nullptr;
+    destroy_func _func;
+};
+
+hipError_t hipFreeWrapper(float* ptr)
+{
+    return hipFree(static_cast<void*>(ptr));
+}
+
 void simpleGemmScaleAB(hipblasLtHandle_t  handle,
                        hipblasOperation_t trans_a,
                        hipblasOperation_t trans_b,
@@ -106,6 +148,10 @@ void simpleGemmScaleAB(hipblasLtHandle_t  handle,
     float* d_scale_b;
     CHECK_HIP_ERROR(hipMalloc(&d_scale_a, sizeof(float)));
     CHECK_HIP_ERROR(hipMalloc(&d_scale_b, sizeof(float)));
+
+    SMART_DESTROYER<float, hipError_t> scaleA_destroyer(d_scale_a, hipFreeWrapper);
+    SMART_DESTROYER<float, hipError_t> scaleB_destroyer(d_scale_b, hipFreeWrapper);
+
     CHECK_HIP_ERROR(
         hipMemcpyAsync(d_scale_a, &h_scale_a, sizeof(float), hipMemcpyHostToDevice, stream));
     CHECK_HIP_ERROR(
@@ -117,12 +163,18 @@ void simpleGemmScaleAB(hipblasLtHandle_t  handle,
     CHECK_HIPBLASLT_ERROR(hipblasLtMatrixLayoutCreate(&matC, HIP_R_16F, m, n, m));
     CHECK_HIPBLASLT_ERROR(hipblasLtMatrixLayoutCreate(&matD, HIP_R_16F, m, n, m));
 
+    SMART_DESTROYER_NON_PTR<hipblasLtMatrixLayout_t, hipblasStatus_t> matA_destroyer(&matA, hipblasLtMatrixLayoutDestroy);
+    SMART_DESTROYER_NON_PTR<hipblasLtMatrixLayout_t, hipblasStatus_t> matB_destroyer(&matB, hipblasLtMatrixLayoutDestroy);
+    SMART_DESTROYER_NON_PTR<hipblasLtMatrixLayout_t, hipblasStatus_t> matC_destroyer(&matC, hipblasLtMatrixLayoutDestroy);
+    SMART_DESTROYER_NON_PTR<hipblasLtMatrixLayout_t, hipblasStatus_t> matD_destroyer(&matD, hipblasLtMatrixLayoutDestroy);
+
     hipblasLtMatmulDesc_t matmul;
     CHECK_HIPBLASLT_ERROR(hipblasLtMatmulDescCreate(&matmul, HIPBLAS_COMPUTE_32F, HIP_R_32F));
     CHECK_HIPBLASLT_ERROR(hipblasLtMatmulDescSetAttribute(
         matmul, HIPBLASLT_MATMUL_DESC_TRANSA, &trans_a, sizeof(int32_t)));
     CHECK_HIPBLASLT_ERROR(hipblasLtMatmulDescSetAttribute(
         matmul, HIPBLASLT_MATMUL_DESC_TRANSB, &trans_b, sizeof(int32_t)));
+    SMART_DESTROYER_NON_PTR<hipblasLtMatmulDesc_t, hipblasStatus_t> matmul_destroyer(&matmul, hipblasLtMatmulDescDestroy);
 
     // Set A and B matrix scale factors
     CHECK_HIPBLASLT_ERROR(hipblasLtMatmulDescSetAttribute(
@@ -132,6 +184,7 @@ void simpleGemmScaleAB(hipblasLtHandle_t  handle,
 
     hipblasLtMatmulPreference_t pref;
     CHECK_HIPBLASLT_ERROR(hipblasLtMatmulPreferenceCreate(&pref));
+    SMART_DESTROYER_NON_PTR<hipblasLtMatmulPreference_t, hipblasStatus_t> pref_destroyer(&pref, hipblasLtMatmulPreferenceDestroy);
     CHECK_HIPBLASLT_ERROR(
         hipblasLtMatmulPreferenceSetAttribute(pref,
                                               HIPBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,
@@ -180,15 +233,6 @@ void simpleGemmScaleAB(hipblasLtHandle_t  handle,
                                           workspace_size,
                                           stream));
 
-    // Clean up resources
-    CHECK_HIP_ERROR(hipFree(d_scale_a));
-    CHECK_HIP_ERROR(hipFree(d_scale_b));
-    CHECK_HIPBLASLT_ERROR(hipblasLtMatmulPreferenceDestroy(pref));
-    CHECK_HIPBLASLT_ERROR(hipblasLtMatmulDescDestroy(matmul));
-    CHECK_HIPBLASLT_ERROR(hipblasLtMatrixLayoutDestroy(matA));
-    CHECK_HIPBLASLT_ERROR(hipblasLtMatrixLayoutDestroy(matB));
-    CHECK_HIPBLASLT_ERROR(hipblasLtMatrixLayoutDestroy(matC));
-    CHECK_HIPBLASLT_ERROR(hipblasLtMatrixLayoutDestroy(matD));
 
     std::cout << "Matrix multiplication completed successfully." << std::endl;
 }
